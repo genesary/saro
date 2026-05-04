@@ -194,6 +194,7 @@ jobs:
 
           gh repo clone genesary/homebrew-tap /tmp/homebrew-tap
           cd /tmp/homebrew-tap
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/genesary/homebrew-tap.git"
 
           sed -i "s|releases/[^\"]*saro_darwin_arm64|releases/download/${TAG}/saro_darwin_arm64|" Formula/saro.rb
           sed -i "s|releases/[^\"]*saro_darwin_amd64|releases/download/${TAG}/saro_darwin_amd64|" Formula/saro.rb
