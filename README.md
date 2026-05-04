@@ -35,18 +35,24 @@ Every organization that air-gaps, vendors, or mirrors third-party dependencies e
 
 ## Install
 
+**Homebrew**
 ```bash
-# Homebrew
 brew install genesary/tap/saro
+```
 
-# From source
+**From source**
+```bash
 go install github.com/genesary/saro/cmd/saro@latest
+```
 
-# Download a release binary
+**Download binary**
+```bash
 curl -sL https://github.com/genesary/saro/releases/latest/download/saro_linux_amd64 -o saro
 chmod +x saro
+```
 
-# Container image (FROM scratch, ~12MB)
+**Container image** (FROM scratch, ~12MB)
+```bash
 docker run --rm ghcr.io/genesary/saro:latest <url> <destination>
 ```
 
