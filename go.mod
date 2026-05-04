@@ -3,7 +3,7 @@ module github.com/genesary/saro
 go 1.25.0
 
 require (
-	github.com/gabriel-vasile/mimetype v1.4.10
+	github.com/gabriel-vasile/mimetype v1.4.13
 	github.com/google/go-containerregistry v0.20.7
 	github.com/posener/complete/v2 v2.1.0
 	github.com/sigstore/sigstore v1.10.5
