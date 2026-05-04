@@ -45,7 +45,9 @@ func detectMediaType(urlPath, contentTypeHeader string, buf []byte, override str
 		if idx := strings.Index(ct, ";"); idx != -1 {
 			ct = strings.TrimSpace(ct[:idx])
 		}
-		return ct
+		if ct != "" {
+			return ct
+		}
 	}
 
 	if mt := mediaTypeFromExtension(urlPath); mt != "" {
