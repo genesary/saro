@@ -159,7 +159,7 @@ func requestFulcioCert(ctx context.Context, fulcioURL string, privKey *ecdsa.Pri
 	if err != nil {
 		return nil, nil, fmt.Errorf("request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -235,7 +235,7 @@ func uploadToRekor(ctx context.Context, rekorURL string, payload, sig, certPEM [
 	if err != nil {
 		return nil, fmt.Errorf("request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

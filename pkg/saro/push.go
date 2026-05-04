@@ -103,7 +103,7 @@ func Push(ctx context.Context, opts PushOptions) (*PushResult, error) {
 			return nil, fmt.Errorf("saro: downloading: %w", err)
 		}
 		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("saro: HTTP %d from source", resp.StatusCode)
 		}
 
@@ -115,7 +115,7 @@ func Push(ctx context.Context, opts PushOptions) (*PushResult, error) {
 			urlPath = u.Path
 		}
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 
 	// Buffer first 512 bytes for MIME detection.
 	buf := make([]byte, 512)

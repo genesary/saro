@@ -21,7 +21,9 @@ func TestKeychainFromConfig(t *testing.T) {
 	}
 	data, _ := json.Marshal(config)
 	configPath := filepath.Join(dir, "config.json")
-	os.WriteFile(configPath, data, 0600)
+	if err := os.WriteFile(configPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	kc := KeychainFromConfig(configPath)
 	if kc == nil {

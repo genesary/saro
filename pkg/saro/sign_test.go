@@ -102,7 +102,9 @@ func TestSign_WithTempKey(t *testing.T) {
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
 
 	keyFile := filepath.Join(t.TempDir(), "test.key")
-	os.WriteFile(keyFile, keyPEM, 0600)
+	if err := os.WriteFile(keyFile, keyPEM, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	err := Sign(context.Background(),
 		"localhost:5000/repo@sha256:abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1",

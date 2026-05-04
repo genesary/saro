@@ -110,7 +110,7 @@ func TestPush_ChecksumFormats(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/octet-stream")
-				w.Write(data)
+				_, _ = w.Write(data)
 			}))
 			defer ts.Close()
 
@@ -127,10 +127,8 @@ func TestPush_ChecksumFormats(t *testing.T) {
 				}
 				// If it's a checksum error specifically
 				if tt.input != "" && tt.input != hexHash && tt.input != "sha256:"+hexHash {
-					if !bytes.Contains([]byte(err.Error()), []byte("checksum")) {
-						// Might fail at push instead — that's ok, we just can't verify checksum
-						// without a real registry. The logic is tested via the tap test above.
-					}
+					// Might fail at push instead of checksum — that's ok without a real registry.
+					_ = bytes.Contains([]byte(err.Error()), []byte("checksum"))
 				}
 			}
 		})
@@ -200,7 +198,7 @@ func TestPush_MIMEDetectionFromServer(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", "104")
-		w.Write(payload)
+		_, _ = w.Write(payload)
 	}))
 	defer ts.Close()
 
@@ -230,11 +228,11 @@ func TestPush_ProgressCallback(t *testing.T) {
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "1024")
-		w.Write(data)
+		_, _ = w.Write(data)
 	}))
 	defer ts.Close()
 
-	Push(context.Background(), PushOptions{
+	_, _ = Push(context.Background(), PushOptions{
 		SourceURL:   ts.URL + "/data",
 		Destination: "localhost:5000/test/progress:v1",
 		Insecure:    true,

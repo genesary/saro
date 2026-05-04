@@ -218,7 +218,7 @@ func TestSignKeyless_FullFlow(t *testing.T) {
 	fulcio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Extract the public key from request to create a cert for it
 		var req map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 
 		// Generate a leaf cert (with a random key since we can't extract from request easily)
 		leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

@@ -54,12 +54,12 @@ func (k *dockerConfigKeychain) Resolve(target authn.Resource) (authn.Authenticat
 	// Temporarily set DOCKER_CONFIG to the podman path, resolve, then restore.
 	// go-containerregistry's config.Load respects DOCKER_CONFIG.
 	orig := os.Getenv("DOCKER_CONFIG")
-	os.Setenv("DOCKER_CONFIG", k.dir)
+	_ = os.Setenv("DOCKER_CONFIG", k.dir)
 	defer func() {
 		if orig != "" {
-			os.Setenv("DOCKER_CONFIG", orig)
+			_ = os.Setenv("DOCKER_CONFIG", orig)
 		} else {
-			os.Unsetenv("DOCKER_CONFIG")
+			_ = os.Unsetenv("DOCKER_CONFIG")
 		}
 	}()
 
@@ -77,7 +77,7 @@ func (k *dockerConfigKeychain) Resolve(target authn.Resource) (authn.Authenticat
 		if err := os.WriteFile(configJSON, data, 0600); err != nil {
 			return authn.Anonymous, nil
 		}
-		defer os.Remove(configJSON)
+		defer func() { _ = os.Remove(configJSON) }()
 	}
 
 	return authn.DefaultKeychain.Resolve(target)
