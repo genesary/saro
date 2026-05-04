@@ -111,9 +111,17 @@ jobs:
         with:
           merge-multiple: true
 
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          artifact-name: sbom-saro.spdx.json
+          output-file: sbom-saro.spdx.json
+
       - name: Compute checksums
         run: sha256sum saro_* saro-*-source.tar.gz > checksums.txt
 
+      # Generate SLSA provenance attestation signed via Sigstore OIDC.
+      # Verify with: gh attestation verify saro_linux_amd64 --repo genesary/saro
       - name: Attest build provenance
         id: attest
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
@@ -122,6 +130,16 @@ jobs:
             saro_*
             saro-*-source.tar.gz
 
+      # Export the attestation bundle as .intoto.jsonl (required by OpenSSF Scorecard)
+      - name: Export provenance bundle
+        run: |
+          for f in saro_* saro-*-source.tar.gz; do
+            if [ -f "$f" ] && [ ! -f "${f}.sig" ]; then
+              cp "${{ steps.attest.outputs.bundle-path }}" "${f}.intoto.jsonl" 2>/dev/null || true
+            fi
+          done
+
+      # Sign all release artifacts with cosign (keyless/Sigstore OIDC)
       - name: Install cosign
         uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
 
@@ -137,7 +155,9 @@ jobs:
             saro_*
             saro-*-source.tar.gz
             *.sig
+            *.intoto.jsonl
             checksums.txt
+            sbom-saro.spdx.json
           generate_release_notes: true
           prerelease: ${{ contains(github.ref, '-rc') }}
 
