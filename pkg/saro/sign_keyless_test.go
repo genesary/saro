@@ -58,8 +58,8 @@ func TestRequestFulcioCert_Success(t *testing.T) {
 
 		w.WriteHeader(http.StatusCreated)
 		// Return leaf + CA as PEM chain
-		w.Write(leafPEM)
-		w.Write(caPEM)
+		_, _ = w.Write(leafPEM)
+		_, _ = w.Write(caPEM)
 	}))
 	defer ts.Close()
 
@@ -93,7 +93,7 @@ func TestRequestFulcioCert_Success(t *testing.T) {
 func TestRequestFulcioCert_Unauthorized(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte("invalid token"))
+		_, _ = w.Write([]byte("invalid token"))
 	}))
 	defer ts.Close()
 
@@ -107,7 +107,7 @@ func TestRequestFulcioCert_Unauthorized(t *testing.T) {
 func TestRequestFulcioCert_NoCerts(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte("not a PEM"))
+		_, _ = w.Write([]byte("not a PEM"))
 	}))
 	defer ts.Close()
 
@@ -141,7 +141,7 @@ func TestUploadToRekor_Success(t *testing.T) {
 		}
 
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{"logIndex":12345}`))
+		_, _ = w.Write([]byte(`{"logIndex":12345}`))
 	}))
 	defer ts.Close()
 
@@ -161,7 +161,7 @@ func TestUploadToRekor_Success(t *testing.T) {
 func TestUploadToRekor_ServerError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("internal error"))
+		_, _ = w.Write([]byte("internal error"))
 	}))
 	defer ts.Close()
 
@@ -226,15 +226,15 @@ func TestSignKeyless_FullFlow(t *testing.T) {
 		leafPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
 
 		w.WriteHeader(http.StatusCreated)
-		w.Write(leafPEM)
-		w.Write(caPEM)
+		_, _ = w.Write(leafPEM)
+		_, _ = w.Write(caPEM)
 	}))
 	defer fulcio.Close()
 
 	// Mock Rekor
 	rekor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{"logIndex":1}`))
+		_, _ = w.Write([]byte(`{"logIndex":1}`))
 	}))
 	defer rekor.Close()
 
@@ -284,8 +284,8 @@ func TestSignKeyless_SkipTlog(t *testing.T) {
 
 	fulcio := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		w.Write(leafPEM)
-		w.Write(caPEM)
+		_, _ = w.Write(leafPEM)
+		_, _ = w.Write(caPEM)
 	}))
 	defer fulcio.Close()
 

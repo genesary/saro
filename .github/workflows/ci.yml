@@ -26,7 +26,12 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test ./... -v -coverprofile=coverage.out -covermode=atomic
+        run: |
+          if [ "${{ matrix.go-version }}" = "1.25" ]; then
+            go test ./... -v -coverprofile=coverage.out -covermode=atomic
+          else
+            go test ./... -v
+          fi
 
       - name: Upload coverage
         if: matrix.go-version == '1.25'
