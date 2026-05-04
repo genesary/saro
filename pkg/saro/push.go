@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/static"
 	"github.com/google/go-containerregistry/pkg/v1/stream"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
@@ -66,13 +68,18 @@ func Push(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	}
 
 	// Parse destination early to fail fast on bad references.
-	nameOpts := []name.Option{}
-	if opts.Insecure {
-		nameOpts = append(nameOpts, name.Insecure)
-	}
-	ref, err := name.ParseReference(opts.Destination, nameOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("saro: invalid destination: %w", err)
+	// For OCI layout output, destination is optional (used only as tag).
+	var ref name.Reference
+	if opts.Destination != "" {
+		nameOpts := []name.Option{}
+		if opts.Insecure {
+			nameOpts = append(nameOpts, name.Insecure)
+		}
+		var err error
+		ref, err = name.ParseReference(opts.Destination, nameOpts...)
+		if err != nil && opts.OutputPath == "" {
+			return nil, fmt.Errorf("saro: invalid destination: %w", err)
+		}
 	}
 
 	var (
@@ -145,7 +152,68 @@ func Push(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	// stream.Layer: consumed during push, zero temp files.
 	layer := stream.NewLayer(io.NopCloser(reader), stream.WithMediaType(types.MediaType(mediaType)))
 
-	// Build initial image to upload the layer blob.
+	if opts.OutputPath != "" {
+		// OCI layout output: buffer the stream to a temp file (since we're
+		// writing to disk anyway), then build the annotated image with full
+		// annotations and write it to the OCI layout in one shot.
+		tmpFile, err := os.CreateTemp("", "saro-layer-*")
+		if err != nil {
+			return nil, fmt.Errorf("saro: creating temp file: %w", err)
+		}
+		tmpPath := tmpFile.Name()
+		defer func() { _ = os.Remove(tmpPath) }()
+
+		if _, err := io.Copy(tmpFile, reader); err != nil {
+			_ = tmpFile.Close()
+			return nil, fmt.Errorf("saro: buffering source: %w", err)
+		}
+		_ = tmpFile.Close()
+
+		// Stream consumed. Verify checksum.
+		actualHash := hex.EncodeToString(hasher.Sum(nil))
+		if opts.ExpectedSHA256 != "" {
+			expected := strings.ToLower(strings.TrimPrefix(opts.ExpectedSHA256, "sha256:"))
+			if actualHash != expected {
+				return nil, fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, expected, actualHash)
+			}
+		}
+
+		// Build annotated image with a static layer from the temp file.
+		sourceURLAnn := opts.SourceURL
+		if opts.Reader != nil && opts.SourceURL == "" {
+			sourceURLAnn = "stdin"
+		}
+		annotations := buildAnnotations(sourceURLAnn, contentType, counter.n, actualHash, opts.Annotations)
+
+		layerData, err := os.ReadFile(tmpPath)
+		if err != nil {
+			return nil, fmt.Errorf("saro: reading temp layer: %w", err)
+		}
+		staticLayer := static.NewLayer(layerData, types.MediaType(mediaType))
+
+		annotatedImg := buildOCIImage(staticLayer)
+		annotatedImg = mutate.Annotations(annotatedImg, annotations).(v1.Image)
+		var finalImg v1.Image = &artifactImage{Image: annotatedImg, artifactType: artifactType}
+
+		if err := writeOCILayout(finalImg, opts.OutputPath, opts.Destination); err != nil {
+			return nil, fmt.Errorf("saro: writing layout: %w", err)
+		}
+
+		digest, err := finalImg.Digest()
+		if err != nil {
+			return nil, fmt.Errorf("saro: computing digest: %w", err)
+		}
+
+		return &PushResult{
+			Digest:       digest,
+			Size:         counter.n,
+			MediaType:    mediaType,
+			ArtifactType: artifactType,
+			SourceURL:    opts.SourceURL,
+		}, nil
+	}
+
+	// Registry push path.
 	img := buildOCIImage(layer)
 
 	// Resolve auth.
@@ -199,7 +267,6 @@ func Push(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("saro: computing digest: %w", err)
 	}
-
 
 	return &PushResult{
 		Digest:       digest,

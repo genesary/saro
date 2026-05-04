@@ -97,6 +97,15 @@ saro --insecure <source-url> <destination>
 # Use a specific credentials file
 saro --registry-config /path/to/config.json <source-url> <destination>
 
+# Save as OCI layout directory (no registry needed)
+saro --output ./oci-layout <source-url>
+
+# Save as OCI archive tarball
+saro --output ./artifact.tar <source-url>
+
+# OCI layout with a destination tag
+saro --output ./oci-layout <source-url> <destination>
+
 # Sign with cosign key
 saro --sign-key cosign.key <source-url> <destination>
 
@@ -136,6 +145,19 @@ saro --sha256 $(curl -sL https://example.com/dep.tar.gz.sha256) \
 ```bash
 saro https://mirror.centos.org/centos/8/extras/x86_64/Packages/epel-release-8.rpm \
   registry.internal/vendor/rpms/epel-release:8
+```
+
+### Air-gapped transfer via OCI layout
+
+```bash
+# On the connected machine: download to OCI archive
+saro --output terraform.tar \
+  https://releases.hashicorp.com/terraform/1.8.0/terraform_1.8.0_linux_amd64.zip
+
+# Transfer terraform.tar to the air-gapped network (USB, sneakernet, etc.)
+
+# On the air-gapped machine: push from OCI archive to internal registry
+oras copy --from-oci-layout terraform.tar:latest harbor.internal/vendor/terraform:1.8.0
 ```
 
 ### Pipe from any command
@@ -182,6 +204,7 @@ cosign verify --key mykey.pub --insecure-ignore-tlog registry.io/repo:tag
 - **Multi-credential support** - Docker, Podman, and credential helpers
 - **Pure OCI artifact** - proper `artifactType`, empty config, spec-compliant manifest
 - **Shell completion** - bash, zsh, fish auto-completion (`COMP_INSTALL=1 saro`)
+- **OCI layout output** - save as OCI directory or tar archive (no registry needed)
 - **12M static binary** - single binary, no runtime dependencies
 
 ## MIME Detection
@@ -255,6 +278,7 @@ For the source HTTP URL, use `--source-header "Authorization: Bearer <token>"`.
 ```go
 import "github.com/genesary/saro/pkg/saro"
 
+// Push to registry
 result, err := saro.Push(ctx, saro.PushOptions{
     SourceURL:   "https://example.com/file.tar.gz",
     Destination: "registry.io/repo:tag",
@@ -262,6 +286,12 @@ result, err := saro.Push(ctx, saro.PushOptions{
     OnProgress: func(downloaded, total int64) {
         fmt.Printf("\r%d / %d bytes", downloaded, total)
     },
+})
+
+// Or save to OCI layout directory
+result, err := saro.Push(ctx, saro.PushOptions{
+    SourceURL:  "https://example.com/file.tar.gz",
+    OutputPath: "./oci-output",
 })
 ```
 

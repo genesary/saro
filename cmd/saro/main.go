@@ -32,6 +32,7 @@ func main() {
 		signKeyless    bool
 		noTlog         bool
 		registryConfig string
+		outputPath     string
 		annotations    stringSlice
 	)
 
@@ -45,6 +46,7 @@ func main() {
 	flag.BoolVar(&signKeyless, "sign", false, "Sign keyless via Fulcio/OIDC (needs COSIGN_IDENTITY_TOKEN)")
 	flag.BoolVar(&noTlog, "no-tlog", false, "Skip Rekor transparency log upload")
 	flag.StringVar(&registryConfig, "registry-config", "", "Path to Docker/Podman JSON credentials file")
+	flag.StringVar(&outputPath, "output", "", "Write OCI layout to directory (or .tar archive) instead of pushing")
 	flag.Var(&annotations, "annotation", "OCI annotation (key=value), repeatable")
 
 	flag.Usage = func() {
@@ -57,13 +59,20 @@ func main() {
 	complete.CommandLine()
 	flag.Parse()
 
-	if flag.NArg() != 2 {
+	// With --output, destination is optional (1 or 2 args)
+	if outputPath != "" && flag.NArg() < 1 {
+		flag.Usage()
+		os.Exit(1)
+	} else if outputPath == "" && flag.NArg() != 2 {
 		flag.Usage()
 		os.Exit(1)
 	}
 
 	sourceURL := flag.Arg(0)
-	destination := flag.Arg(1)
+	destination := ""
+	if flag.NArg() >= 2 {
+		destination = flag.Arg(1)
+	}
 
 	opts := saro.PushOptions{
 		SourceURL:      sourceURL,
@@ -72,6 +81,7 @@ func main() {
 		MediaType:      mediaType,
 		ArtifactType:   artifactType,
 		Insecure:       insecure,
+		OutputPath:     outputPath,
 	}
 
 	// Parse annotations

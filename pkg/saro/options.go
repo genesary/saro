@@ -43,6 +43,13 @@ type PushOptions struct {
 	// Optional: progress callback. Called periodically with bytes downloaded and total.
 	// Total is -1 if unknown (no Content-Length).
 	OnProgress func(downloaded, total int64)
+
+	// Optional: write to a local OCI layout instead of pushing to a registry.
+	// Supports two formats:
+	//   - Directory path (e.g. "./output") - writes OCI layout directory
+	//   - Path ending in .tar (e.g. "./output.tar") - writes OCI archive tarball
+	// When set, Destination is used only for the image reference tag, not for pushing.
+	OutputPath string
 }
 
 // PushResult contains the result of a successful Push.
@@ -58,8 +65,8 @@ func (o *PushOptions) validate() error {
 	if o.SourceURL == "" && o.Reader == nil {
 		return errors.New("saro: SourceURL or Reader is required")
 	}
-	if o.Destination == "" {
-		return errors.New("saro: Destination is required")
+	if o.Destination == "" && o.OutputPath == "" {
+		return errors.New("saro: Destination or OutputPath is required")
 	}
 	return nil
 }

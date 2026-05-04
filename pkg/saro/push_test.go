@@ -149,7 +149,7 @@ func TestPush_ValidationErrors(t *testing.T) {
 		{
 			name: "no destination",
 			opts: PushOptions{SourceURL: "https://example.com/file"},
-			want: "Destination is required",
+			want: "Destination or OutputPath is required",
 		},
 		{
 			name: "stdin without reader",
