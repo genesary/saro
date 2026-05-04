@@ -20,27 +20,27 @@ func (s *stringSlice) Set(v string) error {
 	return nil
 }
 
-func main() {
-	var (
-		sha256Flag     string
-		mediaType      string
-		artifactType   string
-		insecure       bool
-		quiet          bool
-		sourceHeader   string
-		signKey        string
-		signKeyless    bool
-		noTlog         bool
-		registryConfig string
-		outputPath     string
-		annotations    stringSlice
-	)
+var (
+	sha256Flag     string
+	mediaType      string
+	artifactType   string
+	insecure       bool
+	quiet          bool
+	sourceHeader   string
+	signKey        string
+	signKeyless    bool
+	noTlog         bool
+	registryConfig string
+	outputPath     string
+	annotations    stringSlice
+)
 
+func init() {
 	flag.StringVar(&sha256Flag, "sha256", "", "Expected SHA256 hex digest for verification")
 	flag.StringVar(&mediaType, "media-type", "", "Override layer media type")
 	flag.StringVar(&artifactType, "artifact-type", "", "Override manifest artifact type")
 	flag.BoolVar(&insecure, "insecure", false, "Allow HTTP (non-TLS) registries")
-	flag.BoolVar(&quiet, "q", false, "Quiet mode — only print digest on success")
+	flag.BoolVar(&quiet, "q", false, "Quiet mode - only print digest on success")
 	flag.StringVar(&sourceHeader, "source-header", "", "Extra header for source HTTP request (e.g. \"Authorization: Bearer token\")")
 	flag.StringVar(&signKey, "sign-key", "", "Sign with private key (path to cosign.key or PEM)")
 	flag.BoolVar(&signKeyless, "sign", false, "Sign keyless via Fulcio/OIDC (needs COSIGN_IDENTITY_TOKEN)")
@@ -55,11 +55,45 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
+}
 
+func main() {
 	complete.CommandLine()
 	flag.Parse()
 
-	// With --output, destination is optional (1 or 2 args)
+	if err := run(); err != nil {
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
+		}
+		if errors.Is(err, saro.ErrChecksumMismatch) {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	sourceURL, destination := parseArgs()
+
+	opts := buildPushOptions(sourceURL, destination)
+	if err := applySourceHeader(&opts); err != nil {
+		return err
+	}
+	applyRegistryConfig()
+	applyStdin(&opts, sourceURL)
+	applyProgress(&opts)
+
+	ctx := context.Background()
+	result, err := saro.Push(ctx, opts)
+	if err != nil {
+		return err
+	}
+
+	printResult(result, destination)
+	return signIfRequested(ctx, result, destination)
+}
+
+func parseArgs() (sourceURL, destination string) {
 	if outputPath != "" && flag.NArg() < 1 {
 		flag.Usage()
 		os.Exit(1)
@@ -68,12 +102,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	sourceURL := flag.Arg(0)
-	destination := ""
+	sourceURL = flag.Arg(0)
 	if flag.NArg() >= 2 {
 		destination = flag.Arg(1)
 	}
+	return
+}
 
+func buildPushOptions(sourceURL, destination string) saro.PushOptions {
 	opts := saro.PushOptions{
 		SourceURL:      sourceURL,
 		Destination:    destination,
@@ -84,7 +120,6 @@ func main() {
 		OutputPath:     outputPath,
 	}
 
-	// Parse annotations
 	if len(annotations) > 0 {
 		opts.Annotations = make(map[string]string)
 		for _, a := range annotations {
@@ -96,101 +131,93 @@ func main() {
 			opts.Annotations[k] = v
 		}
 	}
+	return opts
+}
 
-	// Source header
-	if sourceHeader != "" {
-		k, v, ok := strings.Cut(sourceHeader, ": ")
-		if !ok {
-			k, v, ok = strings.Cut(sourceHeader, ":")
-		}
-		if !ok {
-			fmt.Fprintf(os.Stderr, "error: invalid header format %q (expected \"Key: Value\")\n", sourceHeader)
-			os.Exit(1)
-		}
-		opts.SourceHeaders = map[string]string{k: strings.TrimSpace(v)}
+func applySourceHeader(opts *saro.PushOptions) error {
+	if sourceHeader == "" {
+		return nil
 	}
-
-	// Registry config override
-	if registryConfig != "" {
-		if _, err := os.Stat(registryConfig); err != nil {
-			fmt.Fprintf(os.Stderr, "error: registry config not found: %s\n", registryConfig)
-			os.Exit(1)
-		}
-		saro.Keychain = saro.KeychainFromConfig(registryConfig)
+	k, v, ok := strings.Cut(sourceHeader, ": ")
+	if !ok {
+		k, v, ok = strings.Cut(sourceHeader, ":")
 	}
+	if !ok {
+		return fmt.Errorf("invalid header format %q (expected \"Key: Value\")", sourceHeader)
+	}
+	opts.SourceHeaders = map[string]string{k: strings.TrimSpace(v)}
+	return nil
+}
 
-	// Stdin mode
+func applyRegistryConfig() {
+	if registryConfig == "" {
+		return
+	}
+	if _, err := os.Stat(registryConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "error: registry config not found: %s\n", registryConfig)
+		os.Exit(1)
+	}
+	saro.Keychain = saro.KeychainFromConfig(registryConfig)
+}
+
+func applyStdin(opts *saro.PushOptions, sourceURL string) {
 	if sourceURL == "-" {
 		opts.Reader = os.Stdin
 	}
+}
 
-	// Progress
-	if !quiet {
-		opts.OnProgress = func(downloaded, total int64) {
-			if total > 0 {
-				pct := float64(downloaded) / float64(total) * 100
-				fmt.Fprintf(os.Stderr, "\r  ↓ %.1f%%  %s / %s", pct, saro.HumanBytes(downloaded), saro.HumanBytes(total))
-			} else {
-				fmt.Fprintf(os.Stderr, "\r  ↓ %s", saro.HumanBytes(downloaded))
-			}
-		}
-	}
-
-	ctx := context.Background()
-	result, err := saro.Push(ctx, opts)
-	if err != nil {
-		if !quiet {
-			fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
-		}
-		if errors.Is(err, saro.ErrChecksumMismatch) {
-			os.Exit(2)
-		}
-		os.Exit(1)
-	}
-
+func applyProgress(opts *saro.PushOptions) {
 	if quiet {
-		fmt.Println(result.Digest.String())
-	} else {
-		fmt.Fprintf(os.Stderr, "\n")
-		fmt.Fprintf(os.Stderr, "  ✓ Pushed %s\n", result.Digest)
-		fmt.Fprintf(os.Stderr, "    Size:     %s\n", saro.HumanBytes(result.Size))
-		fmt.Fprintf(os.Stderr, "    Type:     %s\n", result.MediaType)
-		fmt.Fprintf(os.Stderr, "    Artifact: %s\n", result.ArtifactType)
-		fmt.Fprintf(os.Stderr, "    Dest:     %s\n", destination)
+		return
 	}
-
-	// Signing
-	if signKey != "" || signKeyless {
-		// Sign by digest to ensure we sign exactly what we pushed
-		ref := result.Digest.String()
-		parts := strings.SplitN(destination, ":", 2)
-		imageRef := parts[0] + "@" + ref
-
-		if !quiet {
-			fmt.Fprintf(os.Stderr, "  ⟳ Signing %s...\n", imageRef)
-		}
-
-		var signErr error
-		if signKey != "" {
-			signErr = saro.Sign(ctx, imageRef, saro.SignOptions{
-				KeyPath:  signKey,
-				Insecure: insecure,
-			})
+	opts.OnProgress = func(downloaded, total int64) {
+		if total > 0 {
+			pct := float64(downloaded) / float64(total) * 100
+			fmt.Fprintf(os.Stderr, "\r  ↓ %.1f%%  %s / %s", pct, saro.HumanBytes(downloaded), saro.HumanBytes(total))
 		} else {
-			signErr = saro.SignKeyless(ctx, imageRef, saro.KeylessSignOptions{
-				SkipTlog: noTlog,
-				Insecure: insecure,
-			})
-		}
-
-		if signErr != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", signErr)
-			os.Exit(1)
-		}
-
-		if !quiet {
-			fmt.Fprintf(os.Stderr, "  ✓ Signed\n")
+			fmt.Fprintf(os.Stderr, "\r  ↓ %s", saro.HumanBytes(downloaded))
 		}
 	}
 }
 
+func printResult(result *saro.PushResult, destination string) {
+	if quiet {
+		fmt.Println(result.Digest.String())
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  ✓ Pushed %s\n", result.Digest)
+	fmt.Fprintf(os.Stderr, "    Size:     %s\n", saro.HumanBytes(result.Size))
+	fmt.Fprintf(os.Stderr, "    Type:     %s\n", result.MediaType)
+	fmt.Fprintf(os.Stderr, "    Artifact: %s\n", result.ArtifactType)
+	fmt.Fprintf(os.Stderr, "    Dest:     %s\n", destination)
+}
+
+func signIfRequested(ctx context.Context, result *saro.PushResult, destination string) error {
+	if signKey == "" && !signKeyless {
+		return nil
+	}
+
+	ref := result.Digest.String()
+	parts := strings.SplitN(destination, ":", 2)
+	imageRef := parts[0] + "@" + ref
+
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "  ⟳ Signing %s...\n", imageRef)
+	}
+
+	var err error
+	if signKey != "" {
+		err = saro.Sign(ctx, imageRef, saro.SignOptions{KeyPath: signKey, Insecure: insecure})
+	} else {
+		err = saro.SignKeyless(ctx, imageRef, saro.KeylessSignOptions{SkipTlog: noTlog, Insecure: insecure})
+	}
+	if err != nil {
+		return fmt.Errorf("signing: %w", err)
+	}
+
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "  ✓ Signed\n")
+	}
+	return nil
+}

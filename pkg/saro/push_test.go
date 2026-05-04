@@ -95,9 +95,9 @@ func TestPush_ChecksumFormats(t *testing.T) {
 	hexHash := hex.EncodeToString(hash[:])
 
 	tests := []struct {
-		name     string
-		input    string
-		wantErr  bool
+		name    string
+		input   string
+		wantErr bool
 	}{
 		{"lowercase hex", hexHash, false},
 		{"uppercase hex", "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789", true}, // wrong hash

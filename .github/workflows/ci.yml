@@ -28,7 +28,7 @@ jobs:
       - name: Test
         run: |
           if [ "${{ matrix.go-version }}" = "1.25" ]; then
-            go test ./... -v -coverprofile=coverage.out -covermode=atomic
+            go test ./pkg/saro/ -v -coverprofile=coverage.out -covermode=atomic
           else
             go test ./... -v
           fi

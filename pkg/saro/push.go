@@ -62,13 +62,54 @@ var httpClient = &http.Client{
 //  1. First push: streams the layer blob to the registry.
 //  2. After stream completes: verify checksum, then push final manifest with
 //     full annotations. The layer blob already exists, so this is just a manifest write.
+//
+// streamState holds the prepared streaming pipeline state.
+type streamState struct {
+	reader       io.Reader
+	layer        v1.Layer
+	hasher       hash.Hash
+	counter      *countWriter
+	src          *sourceResult
+	mediaType    string
+	artifactType string
+}
+
+// prepareStream sets up the source download and streaming pipeline.
+func prepareStream(ctx context.Context, opts PushOptions) (*streamState, error) {
+	src, err := fetchSource(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	buf := make([]byte, 512)
+	n, err := io.ReadAtLeast(src.body, buf, 1)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		_ = src.body.Close()
+		return nil, fmt.Errorf("saro: reading source: %w", err)
+	}
+	buf = buf[:n]
+
+	mediaType := detectMediaType(src.urlPath, src.contentType, buf, opts.MediaType)
+	artifactType := detectArtifactType(mediaType, opts.ArtifactType)
+
+	reader := io.MultiReader(bytes.NewReader(buf), src.body)
+	hasher := sha256.New()
+	counter := &countWriter{}
+	tap := &streamTap{hasher: hasher, counter: counter, onProgress: opts.OnProgress, total: src.totalSize}
+	reader = io.TeeReader(reader, tap)
+	layer := stream.NewLayer(io.NopCloser(reader), stream.WithMediaType(types.MediaType(mediaType)))
+
+	return &streamState{
+		reader: reader, layer: layer, hasher: hasher, counter: counter,
+		src: src, mediaType: mediaType, artifactType: artifactType,
+	}, nil
+}
+
 func Push(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
 	}
 
-	// Parse destination early to fail fast on bad references.
-	// For OCI layout output, destination is optional (used only as tag).
 	var ref name.Reference
 	if opts.Destination != "" {
 		nameOpts := []name.Option{}
@@ -82,139 +123,18 @@ func Push(ctx context.Context, opts PushOptions) (*PushResult, error) {
 		}
 	}
 
-	var (
-		body        io.ReadCloser
-		contentType string
-		urlPath     string
-		totalSize   int64
-	)
-
-	if opts.Reader != nil {
-		body = io.NopCloser(opts.Reader)
-		urlPath = ""
-		totalSize = opts.SizeHint
-	} else if opts.SourceURL == "-" {
-		return nil, errors.New("saro: stdin mode requires Reader to be set")
-	} else {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, opts.SourceURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("saro: creating request: %w", err)
-		}
-		req.Header.Set("User-Agent", userAgent)
-		for k, v := range opts.SourceHeaders {
-			req.Header.Set(k, v)
-		}
-
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("saro: downloading: %w", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			_ = resp.Body.Close()
-			return nil, fmt.Errorf("saro: HTTP %d from source", resp.StatusCode)
-		}
-
-		body = resp.Body
-		contentType = resp.Header.Get("Content-Type")
-		totalSize = resp.ContentLength
-
-		if u, err := url.Parse(opts.SourceURL); err == nil {
-			urlPath = u.Path
-		}
+	ss, err := prepareStream(ctx, opts)
+	if err != nil {
+		return nil, err
 	}
-	defer func() { _ = body.Close() }()
-
-	// Buffer first 512 bytes for MIME detection.
-	buf := make([]byte, 512)
-	n, err := io.ReadAtLeast(body, buf, 1)
-	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-		return nil, fmt.Errorf("saro: reading source: %w", err)
-	}
-	buf = buf[:n]
-
-	mediaType := detectMediaType(urlPath, contentType, buf, opts.MediaType)
-	artifactType := detectArtifactType(mediaType, opts.ArtifactType)
-
-	// Single streaming reader pipeline: buffered head + rest of body,
-	// tapped by a combined hasher+counter+progress writer.
-	reader := io.MultiReader(bytes.NewReader(buf), body)
-
-	hasher := sha256.New()
-	counter := &countWriter{}
-	tap := &streamTap{
-		hasher:     hasher,
-		counter:    counter,
-		onProgress: opts.OnProgress,
-		total:      totalSize,
-	}
-	reader = io.TeeReader(reader, tap)
-
-	// stream.Layer: consumed during push, zero temp files.
-	layer := stream.NewLayer(io.NopCloser(reader), stream.WithMediaType(types.MediaType(mediaType)))
+	defer func() { _ = ss.src.body.Close() }()
 
 	if opts.OutputPath != "" {
-		// OCI layout output: buffer the stream to a temp file (since we're
-		// writing to disk anyway), then build the annotated image with full
-		// annotations and write it to the OCI layout in one shot.
-		tmpFile, err := os.CreateTemp("", "saro-layer-*")
-		if err != nil {
-			return nil, fmt.Errorf("saro: creating temp file: %w", err)
-		}
-		tmpPath := tmpFile.Name()
-		defer func() { _ = os.Remove(tmpPath) }()
-
-		if _, err := io.Copy(tmpFile, reader); err != nil {
-			_ = tmpFile.Close()
-			return nil, fmt.Errorf("saro: buffering source: %w", err)
-		}
-		_ = tmpFile.Close()
-
-		// Stream consumed. Verify checksum.
-		actualHash := hex.EncodeToString(hasher.Sum(nil))
-		if opts.ExpectedSHA256 != "" {
-			expected := strings.ToLower(strings.TrimPrefix(opts.ExpectedSHA256, "sha256:"))
-			if actualHash != expected {
-				return nil, fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, expected, actualHash)
-			}
-		}
-
-		// Build annotated image with a static layer from the temp file.
-		sourceURLAnn := opts.SourceURL
-		if opts.Reader != nil && opts.SourceURL == "" {
-			sourceURLAnn = "stdin"
-		}
-		annotations := buildAnnotations(sourceURLAnn, contentType, counter.n, actualHash, opts.Annotations)
-
-		layerData, err := os.ReadFile(tmpPath)
-		if err != nil {
-			return nil, fmt.Errorf("saro: reading temp layer: %w", err)
-		}
-		staticLayer := static.NewLayer(layerData, types.MediaType(mediaType))
-
-		annotatedImg := buildOCIImage(staticLayer)
-		annotatedImg = mutate.Annotations(annotatedImg, annotations).(v1.Image)
-		var finalImg v1.Image = &artifactImage{Image: annotatedImg, artifactType: artifactType}
-
-		if err := writeOCILayout(finalImg, opts.OutputPath, opts.Destination); err != nil {
-			return nil, fmt.Errorf("saro: writing layout: %w", err)
-		}
-
-		digest, err := finalImg.Digest()
-		if err != nil {
-			return nil, fmt.Errorf("saro: computing digest: %w", err)
-		}
-
-		return &PushResult{
-			Digest:       digest,
-			Size:         counter.n,
-			MediaType:    mediaType,
-			ArtifactType: artifactType,
-			SourceURL:    opts.SourceURL,
-		}, nil
+		return pushToLayout(ss, opts)
 	}
 
 	// Registry push path.
-	img := buildOCIImage(layer)
+	img := buildOCIImage(ss.layer)
 
 	// Resolve auth.
 	auth := opts.Auth
@@ -230,34 +150,17 @@ func Push(ctx context.Context, opts PushOptions) (*PushResult, error) {
 		remote.WithContext(ctx),
 	}
 
-	// First push: uploads the layer blob + a minimal manifest.
 	if err := remote.Write(ref, img, remoteOpts...); err != nil {
 		return nil, fmt.Errorf("saro: pushing: %w", err)
 	}
 
-	// Stream fully consumed. Verify checksum.
-	actualHash := hex.EncodeToString(hasher.Sum(nil))
-	if opts.ExpectedSHA256 != "" {
-		expected := strings.ToLower(strings.TrimPrefix(opts.ExpectedSHA256, "sha256:"))
-		if actualHash != expected {
-			return nil, fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, expected, actualHash)
-		}
+	actualHash := hex.EncodeToString(ss.hasher.Sum(nil))
+	if err := verifyChecksum(actualHash, opts.ExpectedSHA256); err != nil {
+		return nil, err
 	}
 
-	// Build full annotations now that we know size + hash.
-	sourceURLAnn := opts.SourceURL
-	if opts.Reader != nil && opts.SourceURL == "" {
-		sourceURLAnn = "stdin"
-	}
-	annotations := buildAnnotations(sourceURLAnn, contentType, counter.n, actualHash, opts.Annotations)
-
-	// Second push: manifest with annotations + artifactType.
-	// The layer blob already exists in the registry. After consumption,
-	// stream.Layer exposes its computed Digest/Size/DiffID, so it can be
-	// reused as a static layer reference for manifest construction.
-	annotatedImg := buildOCIImage(layer)
-	annotatedImg = mutate.Annotations(annotatedImg, annotations).(v1.Image)
-	var finalImg v1.Image = &artifactImage{Image: annotatedImg, artifactType: artifactType}
+	annotations := buildAnnotations(sourceAnnotation(opts), ss.src.contentType, ss.counter.n, actualHash, opts.Annotations)
+	finalImg := buildAnnotatedArtifact(ss.layer, ss.mediaType, ss.artifactType, annotations)
 
 	if err := remote.Write(ref, finalImg, remoteOpts...); err != nil {
 		return nil, fmt.Errorf("saro: pushing manifest: %w", err)
@@ -267,14 +170,48 @@ func Push(ctx context.Context, opts PushOptions) (*PushResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("saro: computing digest: %w", err)
 	}
+	return &PushResult{Digest: digest, Size: ss.counter.n, MediaType: ss.mediaType, ArtifactType: ss.artifactType, SourceURL: opts.SourceURL}, nil
+}
 
-	return &PushResult{
-		Digest:       digest,
-		Size:         counter.n,
-		MediaType:    mediaType,
-		ArtifactType: artifactType,
-		SourceURL:    opts.SourceURL,
-	}, nil
+// pushToLayout writes the artifact to an OCI layout directory or tar archive.
+func pushToLayout(ss *streamState, opts PushOptions) (*PushResult, error) {
+	tmpFile, err := os.CreateTemp("", "saro-layer-*")
+	if err != nil {
+		return nil, fmt.Errorf("saro: creating temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := io.Copy(tmpFile, ss.reader); err != nil {
+		_ = tmpFile.Close()
+		return nil, fmt.Errorf("saro: buffering source: %w", err)
+	}
+	_ = tmpFile.Close()
+
+	actualHash := hex.EncodeToString(ss.hasher.Sum(nil))
+	if err := verifyChecksum(actualHash, opts.ExpectedSHA256); err != nil {
+		return nil, err
+	}
+
+	annotations := buildAnnotations(sourceAnnotation(opts), ss.src.contentType, ss.counter.n, actualHash, opts.Annotations)
+	layerData, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return nil, fmt.Errorf("saro: reading temp layer: %w", err)
+	}
+
+	finalImg := buildAnnotatedArtifact(
+		static.NewLayer(layerData, types.MediaType(ss.mediaType)),
+		ss.mediaType, ss.artifactType, annotations,
+	)
+	if err := writeOCILayout(finalImg, opts.OutputPath, opts.Destination); err != nil {
+		return nil, fmt.Errorf("saro: writing layout: %w", err)
+	}
+
+	digest, err := finalImg.Digest()
+	if err != nil {
+		return nil, fmt.Errorf("saro: computing digest: %w", err)
+	}
+	return &PushResult{Digest: digest, Size: ss.counter.n, MediaType: ss.mediaType, ArtifactType: ss.artifactType, SourceURL: opts.SourceURL}, nil
 }
 
 // buildOCIImage creates an OCI manifest image with the given layer and empty config.
@@ -305,4 +242,76 @@ func (s *streamTap) Write(p []byte) (int, error) {
 
 type countWriter struct {
 	n int64
+}
+
+type sourceResult struct {
+	body        io.ReadCloser
+	contentType string
+	urlPath     string
+	totalSize   int64
+}
+
+// fetchSource opens the source reader from HTTP or stdin.
+func fetchSource(ctx context.Context, opts PushOptions) (*sourceResult, error) {
+	if opts.Reader != nil {
+		return &sourceResult{body: io.NopCloser(opts.Reader), totalSize: opts.SizeHint}, nil
+	}
+	if opts.SourceURL == "-" {
+		return nil, errors.New("saro: stdin mode requires Reader to be set")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, opts.SourceURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("saro: creating request: %w", err)
+	}
+	req.Header.Set("User-Agent", userAgent)
+	for k, v := range opts.SourceHeaders {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("saro: downloading: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("saro: HTTP %d from source", resp.StatusCode)
+	}
+
+	r := &sourceResult{
+		body:        resp.Body,
+		contentType: resp.Header.Get("Content-Type"),
+		totalSize:   resp.ContentLength,
+	}
+	if u, err := url.Parse(opts.SourceURL); err == nil {
+		r.urlPath = u.Path
+	}
+	return r, nil
+}
+
+// verifyChecksum checks the actual hash against the expected one.
+func verifyChecksum(actual, expected string) error {
+	if expected == "" {
+		return nil
+	}
+	expected = strings.ToLower(strings.TrimPrefix(expected, "sha256:"))
+	if actual != expected {
+		return fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, expected, actual)
+	}
+	return nil
+}
+
+// buildAnnotatedArtifact creates the final OCI artifact image with annotations.
+func buildAnnotatedArtifact(layer v1.Layer, mediaType, artifactType string, annotations map[string]string) v1.Image {
+	img := buildOCIImage(layer)
+	img = mutate.Annotations(img, annotations).(v1.Image)
+	return &artifactImage{Image: img, artifactType: artifactType}
+}
+
+// sourceAnnotation returns the source URL for annotations.
+func sourceAnnotation(opts PushOptions) string {
+	if opts.Reader != nil && opts.SourceURL == "" {
+		return "stdin"
+	}
+	return opts.SourceURL
 }

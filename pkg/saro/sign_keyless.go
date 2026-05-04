@@ -307,4 +307,3 @@ func pushKeylessSignature(ctx context.Context, digest name.Digest, payload, sig,
 
 	return remote.Write(sigRef, img, remoteOpts...)
 }
-

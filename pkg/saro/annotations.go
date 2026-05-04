@@ -12,8 +12,8 @@ func buildAnnotations(sourceURL, contentType string, size int64, sha256Hex strin
 	ann := map[string]string{
 		"org.opencontainers.image.source":  sourceURL,
 		"org.opencontainers.image.created": time.Now().UTC().Format(time.RFC3339),
-		"fr.saro.source.checksum":       "sha256:" + sha256Hex,
-		"fr.saro.source.size":           fmt.Sprintf("%d", size),
+		"fr.saro.source.checksum":          "sha256:" + sha256Hex,
+		"fr.saro.source.size":              fmt.Sprintf("%d", size),
 	}
 
 	if title := path.Base(sourceURL); title != "" && title != "." && title != "/" {

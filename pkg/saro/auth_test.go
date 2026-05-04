@@ -73,4 +73,4 @@ func TestBuildKeychain(t *testing.T) {
 type fakeResource string
 
 func (f fakeResource) String() string      { return string(f) }
-func (f fakeResource) RegistryStr() string  { return string(f) }
+func (f fakeResource) RegistryStr() string { return string(f) }
