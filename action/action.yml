@@ -1,0 +1,109 @@
+name: "SARO - Stream Artifacts to Registry"
+description: "Download a URL and push it as an OCI artifact to any registry. Zero temp files."
+branding:
+  icon: "upload-cloud"
+  color: "purple"
+
+inputs:
+  source:
+    description: "HTTP(S) URL to download from"
+    required: true
+  destination:
+    description: "OCI registry destination (registry/repo:tag)"
+    required: true
+  sha256:
+    description: "Expected SHA256 hex digest for verification"
+    required: false
+  media-type:
+    description: "Override layer media type"
+    required: false
+  artifact-type:
+    description: "Override manifest artifact type"
+    required: false
+  annotations:
+    description: "OCI annotations (one per line, key=value format)"
+    required: false
+  sign:
+    description: "Sign with cosign keyless (Fulcio/OIDC). Requires id-token: write permission."
+    required: false
+    default: "false"
+  sign-key:
+    description: "Path to cosign private key for signing"
+    required: false
+  insecure:
+    description: "Allow HTTP (non-TLS) registries"
+    required: false
+    default: "false"
+  version:
+    description: "SARO version to install"
+    required: false
+    default: "latest"
+
+outputs:
+  digest:
+    description: "Manifest digest of the pushed artifact (sha256:...)"
+    value: ${{ steps.push.outputs.digest }}
+  size:
+    description: "Size of the downloaded content in bytes"
+    value: ${{ steps.push.outputs.size }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install SARO
+      shell: bash
+      run: |
+        VERSION="${{ inputs.version }}"
+        if [ "$VERSION" = "latest" ]; then
+          URL="https://github.com/genesary/saro/releases/latest/download/saro_linux_amd64"
+        else
+          URL="https://github.com/genesary/saro/releases/download/${VERSION}/saro_linux_amd64"
+        fi
+        curl -sL "$URL" -o /usr/local/bin/saro
+        chmod +x /usr/local/bin/saro
+
+    - name: Install cosign
+      if: inputs.sign == 'true' || inputs.sign-key != ''
+      uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
+
+    - name: Push artifact
+      id: push
+      shell: bash
+      run: |
+        ARGS="-q"
+
+        if [ -n "${{ inputs.sha256 }}" ]; then
+          ARGS="$ARGS --sha256 ${{ inputs.sha256 }}"
+        fi
+
+        if [ -n "${{ inputs.media-type }}" ]; then
+          ARGS="$ARGS --media-type '${{ inputs.media-type }}'"
+        fi
+
+        if [ -n "${{ inputs.artifact-type }}" ]; then
+          ARGS="$ARGS --artifact-type '${{ inputs.artifact-type }}'"
+        fi
+
+        if [ "${{ inputs.insecure }}" = "true" ]; then
+          ARGS="$ARGS --insecure"
+        fi
+
+        if [ "${{ inputs.sign }}" = "true" ]; then
+          ARGS="$ARGS --sign"
+        fi
+
+        if [ -n "${{ inputs.sign-key }}" ]; then
+          ARGS="$ARGS --sign-key '${{ inputs.sign-key }}'"
+        fi
+
+        # Parse multi-line annotations
+        if [ -n "${{ inputs.annotations }}" ]; then
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then
+              ARGS="$ARGS --annotation '$line'"
+            fi
+          done <<< "${{ inputs.annotations }}"
+        fi
+
+        DIGEST=$(eval saro $ARGS '${{ inputs.source }}' '${{ inputs.destination }}')
+        echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"

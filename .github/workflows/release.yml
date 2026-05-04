@@ -1,0 +1,199 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.25"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o "saro_${{ matrix.goos }}_${{ matrix.goarch }}${EXT}" \
+            ./cmd/saro/
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: saro-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: saro_*
+
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create source tarball
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          git archive --format=tar.gz --prefix="saro-${TAG}/" HEAD > "saro-${TAG}-source.tar.gz"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: saro-source
+          path: saro-*-source.tar.gz
+
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    needs: [build, source]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          merge-multiple: true
+
+      - name: Compute checksums
+        run: sha256sum saro_* saro-*-source.tar.gz > checksums.txt
+
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecc0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            saro_*
+            saro-*-source.tar.gz
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
+
+      - name: Sign release artifacts
+        run: |
+          for f in saro_* saro-*-source.tar.gz; do
+            cosign sign-blob --yes --output-signature "${f}.sig" "${f}"
+          done
+
+      - uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          files: |
+            saro_*
+            saro-*-source.tar.gz
+            *.sig
+            checksums.txt
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref, '-rc') }}
+
+  update-homebrew:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-rc')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@df432a427dc83dc4b8e4b0aeafb2aee766615948 # v2.0.6
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: genesary
+          repositories: homebrew-tap
+
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          merge-multiple: true
+
+      - name: Update homebrew formula
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+
+          SHA_LINUX_AMD64=$(sha256sum saro_linux_amd64 | awk '{print $1}')
+          SHA_LINUX_ARM64=$(sha256sum saro_linux_arm64 | awk '{print $1}')
+          SHA_DARWIN_AMD64=$(sha256sum saro_darwin_amd64 | awk '{print $1}')
+          SHA_DARWIN_ARM64=$(sha256sum saro_darwin_arm64 | awk '{print $1}')
+
+          gh repo clone genesary/homebrew-tap /tmp/homebrew-tap
+          cd /tmp/homebrew-tap
+
+          sed -i "s|releases/[^\"]*saro_darwin_arm64|releases/download/${TAG}/saro_darwin_arm64|" Formula/saro.rb
+          sed -i "s|releases/[^\"]*saro_darwin_amd64|releases/download/${TAG}/saro_darwin_amd64|" Formula/saro.rb
+          sed -i "s|releases/[^\"]*saro_linux_arm64|releases/download/${TAG}/saro_linux_arm64|" Formula/saro.rb
+          sed -i "s|releases/[^\"]*saro_linux_amd64|releases/download/${TAG}/saro_linux_amd64|" Formula/saro.rb
+
+          sed -i "/saro_darwin_arm64/{n;s/sha256 \".*\"/sha256 \"${SHA_DARWIN_ARM64}\"/}" Formula/saro.rb
+          sed -i "/saro_darwin_amd64/{n;s/sha256 \".*\"/sha256 \"${SHA_DARWIN_AMD64}\"/}" Formula/saro.rb
+          sed -i "/saro_linux_arm64/{n;s/sha256 \".*\"/sha256 \"${SHA_LINUX_ARM64}\"/}" Formula/saro.rb
+          sed -i "/saro_linux_amd64/{n;s/sha256 \".*\"/sha256 \"${SHA_LINUX_AMD64}\"/}" Formula/saro.rb
+
+          git config user.name "saro-releaser[bot]"
+          git config user.email "saro-releaser[bot]@users.noreply.github.com"
+
+          BRANCH="chore/update-${TAG}"
+          git checkout -b "$BRANCH"
+          git add Formula/saro.rb
+          git commit -s -m "chore: update saro to ${TAG}"
+          git push origin "$BRANCH" --force
+          gh pr create \
+            --title "chore: update saro to ${TAG}" \
+            --body "Auto-generated: updates SHA256 hashes and download URLs for saro ${TAG}." \
+            --base main --head "$BRANCH" \
+            || echo "PR already exists"
