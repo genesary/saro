@@ -147,16 +147,22 @@ jobs:
       - name: Sign release artifacts
         run: |
           for f in saro_* saro-*-source.tar.gz; do
+            # Only sign binaries and source, not provenance bundles
+            case "$f" in *.intoto.jsonl|*.sig) continue;; esac
             cosign sign-blob --yes --output-signature "${f}.sig" "${f}"
           done
 
       - uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           files: |
-            saro_*
+            saro_linux_*
+            saro_darwin_*
+            saro_windows_*
             saro-*-source.tar.gz
-            *.sig
-            *.intoto.jsonl
+            saro_*.sig
+            saro-*-source.tar.gz.sig
+            saro_*.intoto.jsonl
+            saro-*-source.tar.gz.intoto.jsonl
             checksums.txt
             sbom-saro.spdx.json
           generate_release_notes: true
