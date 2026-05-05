@@ -11,7 +11,7 @@
   <a href="https://github.com/genesary/saro/actions"><img src="https://github.com/genesary/saro/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <a href="https://github.com/genesary/saro/releases"><img src="https://img.shields.io/github/v/release/genesary/saro" alt="Release"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"/></a>
-  <a href="https://goreportcard.com/report/github.com/genesary/saro"><img src="https://goreportcard.com/badge/github.com/genesary/saro" alt="Go Report Card"/></a>
+  <a href="https://goreportcard.com/report/github.com/genesary/saro"><img src="https://goreportcard.com/badge/github.com/genesary/saro?v=1" alt="Go Report Card"/></a>
   <a href="https://codecov.io/gh/genesary/saro"><img src="https://codecov.io/gh/genesary/saro/branch/main/graph/badge.svg" alt="codecov"/></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/genesary/saro"><img src="https://api.scorecard.dev/projects/github.com/genesary/saro/badge" alt="OpenSSF Scorecard"/></a>
   <a href="https://pkg.go.dev/github.com/genesary/saro/pkg/saro"><img src="https://pkg.go.dev/badge/github.com/genesary/saro/pkg/saro.svg" alt="Go Reference"/></a>
